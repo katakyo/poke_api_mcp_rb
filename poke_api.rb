@@ -3,6 +3,7 @@ require "mcp"
 require "net/http"
 require "json"
 require "uri"
+require "base64"
 
 name    "poke-api"
 version "0.1.0"
@@ -37,12 +38,27 @@ def format_pokemon_data(data)
   return data[:error] if data[:error] # Return error if exists
 
   types_str = data[:types].map { |t| t.dig(:type, :name) }.join(", ")
+  sprite_url = data.dig(:sprites, :front_default)
+
+  # 画像データの取得とBase64エンコード
+  image_markdown = ""
+  if sprite_url
+    begin
+      uri = URI(sprite_url)
+      image_data = Net::HTTP.get(uri)
+      base64_data = Base64.strict_encode64(image_data)
+      image_markdown = "\n![#{data[:name]}](data:image/png;base64,#{base64_data})"
+    rescue => e
+      image_markdown = "\nImage Error: #{e.message}"
+    end
+  end
+
   <<~POKEMON
     ID: #{data[:id]}
     Name: #{data[:name].capitalize}
     Height: #{data[:height]}
     Weight: #{data[:weight]}
-    Types: #{types_str}
+    Types: #{types_str}#{image_markdown}
   POKEMON
 end
 
@@ -101,7 +117,51 @@ end
 # Tool: pokemon_sprite
 # ------------------------------------------------------------------
 tool "pokemon_sprite" do
-  description "Get the front-default sprite image URL of a Pokémon."
+  description "Get the front-default sprite image URL of a Pokémon, potentially formatted for display."
+
+  argument :name_or_id, String,
+           required:    true,
+           description: "Pokémon name or ID"
+
+  call do |args|
+    data = fetch_json("pokemon/#{args[:name_or_id]}")
+
+    return { error: "Pokemon data not found: #{data[:error]}" }.to_json if data[:error]
+
+    sprite_url = data.dig(:sprites, :front_default)
+
+    unless sprite_url
+      return { error: "Sprite not available for #{args[:name_or_id]}" }.to_json
+    end
+
+    begin
+      # 画像データを取得
+      uri = URI(sprite_url)
+      image_data = Net::HTTP.get(uri)
+
+      # Base64エンコード
+      base64_data = Base64.strict_encode64(image_data)
+
+      # Markdown形式で画像を表示するためのデータを返す
+      {
+        name: data[:name],
+        id: data[:id],
+        url: sprite_url,
+        base64_data: base64_data,
+        content_type: "image/png",
+        markdown: "![#{data[:name]}](data:image/png;base64,#{base64_data})"
+      }.to_json
+    rescue => e
+      { error: "Failed to encode sprite: #{e.message}" }.to_json
+    end
+  end
+end
+
+# ------------------------------------------------------------------
+# Tool: pokemon_sprite_url
+# ------------------------------------------------------------------
+tool "pokemon_sprite_url" do
+  description "Get only the raw URL of a Pokémon sprite without encoding."
 
   argument :name_or_id, String,
            required:    true,
